@@ -177,6 +177,33 @@ Usuário: "como resolver consumer-timeout no RabbitMQ?"
 
 O parâmetro `query` realiza `ILIKE` em título, tags, filename e no campo `context` do banco — retornando apenas candidatos texualmente relacionados para a IA analisar semanticamente.
 
+### Melhoria possível: Full-Text Search com PostgreSQL
+
+A busca atual usa `ILIKE %termo%`, que funciona bem para bases pequenas e médias mas tem duas limitações relevantes em português:
+
+- **Não entende variações morfológicas**: `"download"` não bate em `"downloads"`, `"erro"` não bate em `"erros"`.
+- **Performance**: `ILIKE` com `%` no início da string não usa índices B-tree — em bases grandes, vira full table scan.
+
+O PostgreSQL tem suporte nativo a **Full-Text Search** via `to_tsvector` / `plainto_tsquery`, com dicionário `portuguese` que faz stemming (reduz as palavras à raiz), normaliza acentos e ignora stopwords. Com isso:
+
+- `"erros de download"` bate em documentos com `"erro"`, `"baixar"`, `"downloads"` etc.
+- A busca usa índice GIN — muito mais rápida em bases com milhares de documentos.
+- É possível ordenar resultados por relevância via `ts_rank`.
+
+**Como implementar:**
+
+1. Criar índice GIN na migration:
+   ```sql
+   CREATE INDEX idx_documents_fts ON documents
+   USING gin(to_tsvector('portuguese', title || ' ' || COALESCE(context, '') || ' ' || array_to_string(tags, ' ')));
+   ```
+
+2. Substituir os filtros `ILIKE` por `to_tsvector` + `plainto_tsquery` em `listDocsForMatching`, via `prisma.$queryRaw` para o trecho da query, mantendo os filtros de `allowedProjects`, `project`, `module` e `category` como condições `AND` normais do Prisma.
+
+3. Usar `ts_rank` para ordenar por relevância em vez de apenas `updatedAt`.
+
+O fallback automático (quando a busca textual retorna zero) continua sendo válido com FTS — apenas o critério de "não encontrou nada" muda de "nenhum ILIKE bateu" para "nenhum documento passou no plainto_tsquery".
+
 ### Upload de documento
 
 ```

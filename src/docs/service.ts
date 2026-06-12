@@ -15,6 +15,25 @@ import {
 } from "../utils/markdownValidator.js";
 
 const CONTEXT_PREVIEW_LENGTH = 500;
+const MIN_TERM_LENGTH = 2;
+
+function normalizeQuery(input: string): string {
+  return input
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function buildQueryTerms(rawQuery: string): string[] {
+  const normalized = normalizeQuery(rawQuery);
+
+  const terms = normalized
+    .split(/[^a-z0-9]+/g)
+    .map((term) => term.trim())
+    .filter((term) => term.length >= MIN_TERM_LENGTH);
+
+  return [...new Set(terms)];
+}
 
 export interface ListDocsForMatchingInput {
   query?: string;
@@ -41,47 +60,97 @@ export async function listDocsForMatching(
 ): Promise<{ docs: DocForMatching[]; total: number }> {
   const { query, project, module, category, limit = 50, offset = 0, allowedProjects } = input;
 
-  const where: Prisma.DocumentWhereInput = { status: "active" };
+  const baseFilters: Prisma.DocumentWhereInput[] = [{ status: "active" }];
 
   if (allowedProjects.length > 0) {
-    where.project = { in: allowedProjects };
+    baseFilters.push({ project: { in: allowedProjects } });
   }
   if (project) {
-    where.project = { contains: project, mode: "insensitive" };
+    baseFilters.push({ project: { contains: project, mode: "insensitive" } });
   }
   if (module) {
-    where.module = { contains: module, mode: "insensitive" };
+    baseFilters.push({ module: { contains: module, mode: "insensitive" } });
   }
   if (category) {
-    where.category = { contains: category, mode: "insensitive" };
+    baseFilters.push({ category: { contains: category, mode: "insensitive" } });
   }
-  if (query) {
-    where.OR = [
-      { title: { contains: query, mode: "insensitive" } },
-      { tags: { hasSome: [query.toLowerCase()] } },
-      { context: { contains: query, mode: "insensitive" } },
-      { filename: { contains: query, mode: "insensitive" } },
+
+  let queryFilter: Prisma.DocumentWhereInput | undefined;
+  const trimmedQuery = query?.trim();
+  if (trimmedQuery) {
+    const queryTerms = buildQueryTerms(trimmedQuery);
+
+    const queryOrFilters: Prisma.DocumentWhereInput[] = [
+      { title: { contains: trimmedQuery, mode: "insensitive" } },
+      { context: { contains: trimmedQuery, mode: "insensitive" } },
+      { filename: { contains: trimmedQuery, mode: "insensitive" } },
+      { tags: { hasSome: [trimmedQuery.toLowerCase()] } },
     ];
+
+    for (const term of queryTerms) {
+      queryOrFilters.push(
+        { title: { contains: term, mode: "insensitive" } },
+        { context: { contains: term, mode: "insensitive" } },
+        { filename: { contains: term, mode: "insensitive" } },
+        { tags: { hasSome: [term] } }
+      );
+    }
+
+    queryFilter = { OR: queryOrFilters };
   }
+
+  const where: Prisma.DocumentWhereInput = queryFilter
+    ? { AND: [...baseFilters, queryFilter] }
+    : { AND: baseFilters };
+
+  const queryOptions = {
+    take: Math.min(limit, 100),
+    skip: offset,
+    orderBy: { updatedAt: "desc" as const },
+    select: {
+      id: true,
+      title: true,
+      project: true,
+      module: true,
+      category: true,
+      tags: true,
+      context: true,
+    },
+  };
 
   const [docs, total] = await Promise.all([
     prisma.document.findMany({
       where,
-      take: Math.min(limit, 100),
-      skip: offset,
-      orderBy: { updatedAt: "desc" },
-      select: {
-        id: true,
-        title: true,
-        project: true,
-        module: true,
-        category: true,
-        tags: true,
-        context: true,
-      },
+      ...queryOptions,
     }),
     prisma.document.count({ where }),
   ]);
+
+  // Fallback para evitar retornos vazios em consultas com query muito específica.
+  // A IA local ainda fará o matching semântico usando os contextos retornados.
+  if (trimmedQuery && docs.length === 0) {
+    const fallbackWhere: Prisma.DocumentWhereInput = { AND: baseFilters };
+    const [fallbackDocs, fallbackTotal] = await Promise.all([
+      prisma.document.findMany({
+        where: fallbackWhere,
+        ...queryOptions,
+      }),
+      prisma.document.count({ where: fallbackWhere }),
+    ]);
+
+    return {
+      docs: fallbackDocs.map((d) => ({
+        doc_id: d.id,
+        title: d.title,
+        project: d.project,
+        module: d.module,
+        category: d.category,
+        tags: d.tags,
+        context: (d.context ?? "").slice(0, CONTEXT_PREVIEW_LENGTH),
+      })),
+      total: fallbackTotal,
+    };
+  }
 
   return {
     docs: docs.map((d) => ({
@@ -108,6 +177,7 @@ export async function getDoc(docId: string, allowedProjects: string[]): Promise<
     category: string;
     status: string;
     tags: string[];
+    context: string;
     created_at: string;
     updated_at: string;
   };
@@ -134,6 +204,7 @@ export async function getDoc(docId: string, allowedProjects: string[]): Promise<
       category: doc.category,
       status: doc.status,
       tags: doc.tags,
+      context: doc.context ?? "",
       created_at: doc.createdAt.toISOString(),
       updated_at: doc.updatedAt.toISOString(),
     },
@@ -278,14 +349,16 @@ export async function listRecentDocs(
   limit: number,
   allowedProjects: string[]
 ): Promise<{ documents: Array<{ doc_id: string; title: string; filename: string; project: string; module: string | null; category: string; updated_at: string }> }> {
-  const where: Record<string, unknown> = { status: "active" };
+  const andFilters: Prisma.DocumentWhereInput[] = [{ status: "active" }];
 
   if (allowedProjects.length > 0) {
-    where.project = { in: allowedProjects };
+    andFilters.push({ project: { in: allowedProjects } });
   }
 
-  if (project) where.project = { contains: project, mode: "insensitive" };
-  if (module) where.module = { contains: module, mode: "insensitive" };
+  if (project) andFilters.push({ project: { contains: project, mode: "insensitive" } });
+  if (module) andFilters.push({ module: { contains: module, mode: "insensitive" } });
+
+  const where: Prisma.DocumentWhereInput = { AND: andFilters };
 
   const docs = await prisma.document.findMany({
     where,

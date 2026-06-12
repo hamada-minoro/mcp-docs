@@ -93,8 +93,39 @@ describe("listDocsForMatching", () => {
     await listDocsForMatching({ query: "rabbitmq timeout", allowedProjects: [] });
 
     const callArg = vi.mocked(prisma.document.findMany).mock.calls[0][0] as any;
-    expect(callArg.where.OR).toBeDefined();
-    expect(callArg.where.OR.some((c: any) => c.title?.contains === "rabbitmq timeout")).toBe(true);
+    expect(callArg.where.AND).toBeDefined();
+
+    const queryFilter = callArg.where.AND.find((c: any) => Array.isArray(c.OR));
+    expect(queryFilter).toBeDefined();
+    expect(queryFilter.OR.some((c: any) => c.title?.contains === "rabbitmq timeout")).toBe(true);
+    expect(queryFilter.OR.some((c: any) => c.title?.contains === "rabbitmq")).toBe(true);
+    expect(queryFilter.OR.some((c: any) => c.title?.contains === "timeout")).toBe(true);
+  });
+
+  it("deve combinar filtro de allowedProjects com filtro de project", async () => {
+    vi.mocked(prisma.document.findMany).mockResolvedValue([]) as any;
+    vi.mocked(prisma.document.count).mockResolvedValue(0);
+
+    await listDocsForMatching({ project: "Safe", allowedProjects: ["SafeDocs", "Reg+"] });
+
+    const callArg = vi.mocked(prisma.document.findMany).mock.calls[0][0] as any;
+    expect(callArg.where.AND.some((c: any) => c.project?.in)).toBe(true);
+    expect(callArg.where.AND.some((c: any) => c.project?.contains === "Safe")).toBe(true);
+  });
+
+  it("deve fazer fallback sem query quando pré-filtro textual não encontra docs", async () => {
+    vi.mocked(prisma.document.findMany)
+      .mockResolvedValueOnce([] as any)
+      .mockResolvedValueOnce([mockDoc] as any);
+    vi.mocked(prisma.document.count)
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(1);
+
+    const result = await listDocsForMatching({ query: "termo-inexistente", allowedProjects: ["SafeDocs"] });
+
+    expect(result.docs).toHaveLength(1);
+    expect(result.docs[0].doc_id).toBe("doc-001");
+    expect(vi.mocked(prisma.document.findMany)).toHaveBeenCalledTimes(2);
   });
 
   it("deve retornar lista vazia quando não há documentos", async () => {
@@ -129,6 +160,7 @@ describe("getDoc", () => {
     expect(result.title).toBe("Correção de download no SafeDocs Admin");
     expect(result.content_markdown).toBe("# Conteúdo mock");
     expect(result.metadata.project).toBe("SafeDocs");
+    expect(result.metadata.context).toBe(mockDoc.context);
   });
 
   it("deve lançar erro quando documento não encontrado", async () => {
