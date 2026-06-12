@@ -2,7 +2,7 @@
 
 Servidor MCP para centralizar documentações técnicas internas da empresa. Integra com Claude Code, VS Code, JetBrains e qualquer cliente compatível com o protocolo MCP.
 
-A busca usa **embeddings vetoriais (pgvector + OpenAI)** — encontra documentos por similaridade semântica, não por palavras-chave exatas. Perguntar sobre "erro 403 no download" encontra a doc "Correção de download na api" mesmo sem correspondência textual.
+A busca usa **matching semântico pela IA da IDE** — a IA lê o contexto extraído de cada documento e identifica os relevantes usando sua própria compreensão de linguagem natural, sem depender de APIs externas de embeddings.
 
 ---
 
@@ -13,8 +13,7 @@ A busca usa **embeddings vetoriais (pgvector + OpenAI)** — encontra documentos
 | Servidor | Node.js 20 + Express |
 | Protocolo | MCP SDK (`@modelcontextprotocol/sdk`) via HTTP + SSE |
 | ORM | Prisma 6 |
-| Banco | PostgreSQL 16 + extensão `pgvector` |
-| Busca semântica | OpenAI `text-embedding-3-small` + pgvector cosine similarity |
+| Banco | PostgreSQL 16 |
 | Storage de arquivos | MinIO (compatível S3) |
 | Rate limiting / cache | Redis 7 |
 | Validação de schema | Zod |
@@ -25,7 +24,6 @@ A busca usa **embeddings vetoriais (pgvector + OpenAI)** — encontra documentos
 
 - Node.js 20+
 - Docker e Docker Compose
-- Conta OpenAI com créditos (para embeddings)
 
 ---
 
@@ -38,12 +36,11 @@ npm install
 
 # 2. Copiar e editar variáveis de ambiente
 cp .env.example .env
-# Edite .env e preencha OPENAI_API_KEY
 
 # 3. Subir infraestrutura (PostgreSQL + Redis + MinIO)
 npm run infra:up
 
-# 4. Criar tabelas + extensão pgvector
+# 4. Criar tabelas
 npm run db:migrate
 
 # 5. Gerar Prisma Client
@@ -52,13 +49,10 @@ npm run db:generate
 # 6. Criar usuários e API keys iniciais
 npm run db:seed
 
-# 7. Fazer upload do documento de exemplo no MinIO
+# 7. Fazer upload dos documentos de exemplo no MinIO
 npx tsx scripts/upload-example-docs.ts
 
-# 8. Gerar embeddings dos documentos existentes
-npx tsx scripts/reindex-embeddings.ts
-
-# 9. Iniciar servidor (porta 3339)
+# 8. Iniciar servidor (porta 3339)
 npm run dev
 ```
 
@@ -82,9 +76,6 @@ S3_ACCESS_KEY_ID=minioadmin
 S3_SECRET_ACCESS_KEY=minioadmin
 S3_BUCKET=mcp-docs-internal
 S3_FORCE_PATH_STYLE=true
-
-# OpenAI (embeddings para busca semântica)
-OPENAI_API_KEY=sk-...
 
 # Servidor
 PORT=3339
@@ -140,10 +131,10 @@ Crie `.vscode/mcp.json` na raiz do workspace:
 
 | Tool | Escopo | Descrição |
 |---|---|---|
-| `search_docs` | `docs:search` | Busca semântica por problema, erro ou contexto |
+| `list_docs_for_matching` | `docs:search` | Retorna metadados + contexto para matching semântico pela IA |
 | `get_doc` | `docs:read` | Retorna conteúdo Markdown completo pelo ID |
 | `download_doc` | `docs:download` | Gera URL pré-assinada de download (5 min) |
-| `upload_markdown_doc` | `docs:upload` | Faz upload, extrai contexto e gera embedding automaticamente |
+| `upload_markdown_doc` | `docs:upload` | Faz upload, extrai contexto e indexa automaticamente |
 | `validate_markdown_doc` | `docs:upload` | Valida estrutura antes do upload |
 | `list_recent_docs` | `docs:search` | Lista documentações recentes por projeto/módulo |
 | `suggest_doc_template` | `docs:search` | Gera template Markdown no padrão da empresa |
@@ -160,34 +151,45 @@ Crie `.vscode/mcp.json` na raiz do workspace:
 
 ## Como a busca semântica funciona
 
+### Fluxo de busca
+
+```
+Usuário: "como resolver consumer-timeout no RabbitMQ?"
+
+1. IA chama list_docs_for_matching(query: "consumer-timeout rabbitmq")
+   → banco pré-filtra por texto em título, tags e context (ILIKE)
+   → retorna até 50 docs com { doc_id, title, project, category, tags, context[0:500] }
+
+2. IA lê os contextos e identifica semanticamente os relevantes
+   (sem API externa — usa a própria compreensão de linguagem)
+
+3. IA chama get_doc(doc_id) para obter o conteúdo completo
+   ou download_doc(doc_id) para gerar link de download
+```
+
+### Escalabilidade
+
+| Tamanho da base | Estratégia recomendada |
+|---|---|
+| Até ~200 docs | `list_docs_for_matching` sem query — IA lê todos os contextos |
+| 200–1000 docs | `list_docs_for_matching(query: "termos do problema")` — pré-filtro textual reduz o conjunto |
+| 1000+ docs | Pré-filtro por `project` + `category` + `query` para manter o conjunto pequeno |
+
+O parâmetro `query` realiza `ILIKE` em título, tags, filename e no campo `context` do banco — retornando apenas candidatos texualmente relacionados para a IA analisar semanticamente.
+
 ### Upload de documento
 
 ```
 Markdown recebido
   → extractTitle() + extractMetadata()   — título, categoria, projeto, módulo, tags
   → extractContext()                      — corpo sem seção de metadados nem blocos de código
+  → validateMarkdown()                    — seções obrigatórias, secrets, HTML perigoso
   → MinIO/S3                             — arquivo .md completo armazenado
   → PostgreSQL documents                 — metadados + context salvos
   → PostgreSQL document_chunks           — seções indexadas por heading
-  → OpenAI text-embedding-3-small        — embedding gerado do texto:
-      "categoria: Bug
-       projeto: Reg+
-       módulo: Admin
-       tags: download, s3
-       título: Correção de download na api
-       [context completo]"
-  → PostgreSQL documents.embedding       — vetor float[1536] armazenado
 ```
 
-### Busca
-
-```
-Query: "erro 403 no download"
-  → OpenAI text-embedding-3-small        — embedding da query (float[1536])
-  → pgvector: ORDER BY embedding <=> query_vector  — distância cosseno
-  → Retorna documentos ordenados por score (0–1)
-  → Fallback automático para ILIKE se OPENAI_API_KEY não configurado
-```
+O campo `context` extraído é o que a IA usa para matching semântico — quanto mais rico o conteúdo das seções do documento, mais precisa a identificação.
 
 ---
 
@@ -216,8 +218,7 @@ npm run db:seed                           # Cria usuários e API keys de dev
 npm run db:studio                         # Prisma Studio (visualizar banco)
 npm run infra:up                          # Sobe PostgreSQL + Redis + MinIO
 npm run infra:down                        # Para os containers
-npx tsx scripts/upload-example-docs.ts   # Upload do doc de exemplo no MinIO
-npx tsx scripts/reindex-embeddings.ts    # Gera embeddings para docs sem vetor
+npx tsx scripts/upload-example-docs.ts   # Upload dos docs de exemplo no MinIO
 ```
 
 ---

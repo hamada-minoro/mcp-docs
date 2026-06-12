@@ -13,162 +13,87 @@ import {
   extractMetadata,
   extractContext,
 } from "../utils/markdownValidator.js";
-import {
-  isEmbeddingEnabled,
-  buildDocumentText,
-  generateEmbedding,
-} from "../services/embedding.js";
 
-export interface SearchDocsInput {
-  query: string;
+const CONTEXT_PREVIEW_LENGTH = 500;
+
+export interface ListDocsForMatchingInput {
+  query?: string;
   project?: string;
   module?: string;
   category?: string;
   limit?: number;
+  offset?: number;
   allowedProjects: string[];
 }
 
-export interface SearchDocResult {
+export interface DocForMatching {
   doc_id: string;
   title: string;
-  filename: string;
   project: string;
   module: string | null;
   category: string;
-  status: string;
   tags: string[];
-  summary: string;
-  score: number;
-  updated_at: string;
+  context: string;
 }
 
-export async function searchDocs(input: SearchDocsInput): Promise<{ results: SearchDocResult[] }> {
-  if (isEmbeddingEnabled()) {
-    try {
-      return await searchDocsWithVector(input);
-    } catch (err) {
-      console.error("[search] vector search failed, falling back to text search:", err);
-    }
-  }
-  return searchDocsWithText(input);
-}
+export async function listDocsForMatching(
+  input: ListDocsForMatchingInput
+): Promise<{ docs: DocForMatching[]; total: number }> {
+  const { query, project, module, category, limit = 50, offset = 0, allowedProjects } = input;
 
-type VectorRow = {
-  id: string;
-  title: string;
-  filename: string;
-  project: string;
-  module: string | null;
-  category: string;
-  status: string;
-  tags: string[];
-  updated_at: Date;
-  score: number;
-};
-
-async function searchDocsWithVector(input: SearchDocsInput): Promise<{ results: SearchDocResult[] }> {
-  const { query, project, module, category, limit = 5, allowedProjects } = input;
-
-  const queryEmbedding = await generateEmbedding(query);
-  const vectorStr = `[${queryEmbedding.join(",")}]`;
-  const take = Math.min(limit, 20);
-
-  let conditions = Prisma.sql`d.status = 'active' AND d.embedding IS NOT NULL`;
+  const where: Prisma.DocumentWhereInput = { status: "active" };
 
   if (allowedProjects.length > 0) {
-    conditions = Prisma.sql`${conditions} AND d.project = ANY(${allowedProjects})`;
+    where.project = { in: allowedProjects };
   }
   if (project) {
-    conditions = Prisma.sql`${conditions} AND d.project ILIKE ${"%" + project + "%"}`;
+    where.project = { contains: project, mode: "insensitive" };
   }
   if (module) {
-    conditions = Prisma.sql`${conditions} AND d.module ILIKE ${"%" + module + "%"}`;
+    where.module = { contains: module, mode: "insensitive" };
   }
   if (category) {
-    conditions = Prisma.sql`${conditions} AND d.category ILIKE ${"%" + category + "%"}`;
+    where.category = { contains: category, mode: "insensitive" };
+  }
+  if (query) {
+    where.OR = [
+      { title: { contains: query, mode: "insensitive" } },
+      { tags: { hasSome: [query.toLowerCase()] } },
+      { context: { contains: query, mode: "insensitive" } },
+      { filename: { contains: query, mode: "insensitive" } },
+    ];
   }
 
-  const rows = await prisma.$queryRaw<VectorRow[]>(Prisma.sql`
-    SELECT
-      d.id,
-      d.title,
-      d.filename,
-      d.project,
-      d.module,
-      d.category,
-      d.status,
-      d.tags,
-      d.updated_at,
-      (1 - (d.embedding <=> ${vectorStr}::vector))::float AS score
-    FROM documents d
-    WHERE ${conditions}
-    ORDER BY d.embedding <=> ${vectorStr}::vector
-    LIMIT ${take}
-  `);
+  const [docs, total] = await Promise.all([
+    prisma.document.findMany({
+      where,
+      take: Math.min(limit, 100),
+      skip: offset,
+      orderBy: { updatedAt: "desc" },
+      select: {
+        id: true,
+        title: true,
+        project: true,
+        module: true,
+        category: true,
+        tags: true,
+        context: true,
+      },
+    }),
+    prisma.document.count({ where }),
+  ]);
 
   return {
-    results: rows.map((row) => ({
-      doc_id: row.id,
-      title: row.title,
-      filename: row.filename,
-      project: row.project,
-      module: row.module,
-      category: row.category,
-      status: row.status,
-      tags: row.tags,
-      summary: `Documento ${row.category} do projeto ${row.project}${row.module ? ` / ${row.module}` : ""}`,
-      score: Number(row.score),
-      updated_at: new Date(row.updated_at).toISOString(),
+    docs: docs.map((d) => ({
+      doc_id: d.id,
+      title: d.title,
+      project: d.project,
+      module: d.module,
+      category: d.category,
+      tags: d.tags,
+      context: (d.context ?? "").slice(0, CONTEXT_PREVIEW_LENGTH),
     })),
-  };
-}
-
-async function searchDocsWithText(input: SearchDocsInput): Promise<{ results: SearchDocResult[] }> {
-  const { query, project, module, category, limit = 5, allowedProjects } = input;
-
-  const whereClause: Record<string, unknown> = { status: "active" };
-
-  if (allowedProjects.length > 0) {
-    whereClause.project = { in: allowedProjects };
-  }
-  if (project) {
-    whereClause.project = { contains: project, mode: "insensitive" };
-  }
-  if (module) {
-    whereClause.module = { contains: module, mode: "insensitive" };
-  }
-  if (category) {
-    whereClause.category = { contains: category, mode: "insensitive" };
-  }
-
-  const docs = await prisma.document.findMany({
-    where: {
-      ...whereClause,
-      OR: [
-        { title: { contains: query, mode: "insensitive" } },
-        { filename: { contains: query, mode: "insensitive" } },
-        { tags: { hasSome: [query.toLowerCase()] } },
-        { module: { contains: query, mode: "insensitive" } },
-      ],
-    },
-    take: Math.min(limit, 20),
-    orderBy: { updatedAt: "desc" },
-  });
-
-  return {
-    results: docs.map((doc) => ({
-      doc_id: doc.id,
-      title: doc.title,
-      filename: doc.filename,
-      project: doc.project,
-      module: doc.module,
-      category: doc.category,
-      status: doc.status,
-      tags: doc.tags,
-      summary: `Documento ${doc.category} do projeto ${doc.project}${doc.module ? ` / ${doc.module}` : ""}`,
-      score: 1.0,
-      updated_at: doc.updatedAt.toISOString(),
-    })),
+    total,
   };
 }
 
@@ -311,14 +236,6 @@ export async function uploadDoc(input: UploadDocInput): Promise<{
   });
 
   await indexDocumentChunks(doc.id, content_markdown);
-  await generateAndStoreEmbedding(doc.id, {
-    title: doc.title,
-    category: doc.category,
-    project: doc.project,
-    module: doc.module,
-    tags: doc.tags,
-    context,
-  });
 
   return {
     doc_id: doc.id,
@@ -329,23 +246,6 @@ export async function uploadDoc(input: UploadDocInput): Promise<{
         ? "Documento recebido, mas requer revisão antes de ser publicado."
         : "Documento recebido, validado e indexado com sucesso.",
   };
-}
-
-async function generateAndStoreEmbedding(
-  docId: string,
-  doc: { title: string; category: string; project: string; module?: string | null; tags: string[]; context: string }
-): Promise<void> {
-  if (!isEmbeddingEnabled()) return;
-  try {
-    const text = buildDocumentText(doc);
-    const embedding = await generateEmbedding(text);
-    const vectorStr = `[${embedding.join(",")}]`;
-    await prisma.$executeRaw`
-      UPDATE documents SET embedding = ${vectorStr}::vector WHERE id = ${docId}
-    `;
-  } catch (err) {
-    console.error(`[embedding] failed to generate embedding for doc ${docId}:`, err);
-  }
 }
 
 async function indexDocumentChunks(documentId: string, content: string): Promise<void> {

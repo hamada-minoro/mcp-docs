@@ -7,6 +7,7 @@ vi.mock("../src/db/client.js", () => ({
     document: {
       findFirst: vi.fn(),
       findMany: vi.fn(),
+      count: vi.fn(),
       create: vi.fn(),
     },
     documentChunk: {
@@ -26,7 +27,7 @@ vi.mock("../src/storage/minio.js", () => ({
 }));
 
 import { prisma } from "../src/db/client.js";
-import { searchDocs, getDoc, generateDownloadUrl, uploadDoc, listRecentDocs } from "../src/docs/service.js";
+import { listDocsForMatching, getDoc, generateDownloadUrl, uploadDoc, listRecentDocs } from "../src/docs/service.js";
 
 const mockDoc = {
   id: "doc-001",
@@ -37,6 +38,7 @@ const mockDoc = {
   category: "Bug",
   status: "active",
   tags: ["download", "storage"],
+  context: "O módulo Admin apresentava erro 403 ao tentar baixar documentos do storage privado.",
   s3Key: "docs/safedocs/doc-001/correcao-download.md",
   createdBy: "user-001",
   updatedBy: null,
@@ -44,27 +46,74 @@ const mockDoc = {
   updatedAt: new Date("2026-06-10"),
 };
 
-describe("searchDocs", () => {
+describe("listDocsForMatching", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("deve retornar resultados formatados corretamente", async () => {
-    vi.mocked(prisma.document.findMany).mockResolvedValue([mockDoc] as any);
+  it("deve retornar docs com contexto truncado a 500 chars", async () => {
+    const longContext = "A".repeat(800);
+    vi.mocked(prisma.document.findMany).mockResolvedValue([{ ...mockDoc, context: longContext }] as any);
+    vi.mocked(prisma.document.count).mockResolvedValue(1);
 
-    const result = await searchDocs({
-      query: "download",
-      allowedProjects: ["SafeDocs"],
-    });
+    const result = await listDocsForMatching({ allowedProjects: ["SafeDocs"] });
 
-    expect(result.results).toHaveLength(1);
-    expect(result.results[0].doc_id).toBe("doc-001");
-    expect(result.results[0].title).toBe("Correção de download no SafeDocs Admin");
-    expect(result.results[0].tags).toContain("download");
+    expect(result.docs).toHaveLength(1);
+    expect(result.docs[0].doc_id).toBe("doc-001");
+    expect(result.docs[0].context.length).toBe(500);
+    expect(result.total).toBe(1);
   });
 
-  it("deve retornar lista vazia quando não há resultados", async () => {
+  it("deve retornar contexto completo quando menor que 500 chars", async () => {
+    vi.mocked(prisma.document.findMany).mockResolvedValue([mockDoc] as any);
+    vi.mocked(prisma.document.count).mockResolvedValue(1);
+
+    const result = await listDocsForMatching({ allowedProjects: ["SafeDocs"] });
+
+    expect(result.docs[0].context).toBe(mockDoc.context);
+  });
+
+  it("deve incluir campos necessários para matching semântico", async () => {
+    vi.mocked(prisma.document.findMany).mockResolvedValue([mockDoc] as any);
+    vi.mocked(prisma.document.count).mockResolvedValue(1);
+
+    const result = await listDocsForMatching({ allowedProjects: [] });
+
+    const doc = result.docs[0];
+    expect(doc.doc_id).toBeDefined();
+    expect(doc.title).toBeDefined();
+    expect(doc.project).toBeDefined();
+    expect(doc.category).toBeDefined();
+    expect(doc.tags).toBeInstanceOf(Array);
+    expect(doc.context).toBeDefined();
+  });
+
+  it("deve passar query para o banco como pré-filtro textual", async () => {
+    vi.mocked(prisma.document.findMany).mockResolvedValue([]) as any;
+    vi.mocked(prisma.document.count).mockResolvedValue(0);
+
+    await listDocsForMatching({ query: "rabbitmq timeout", allowedProjects: [] });
+
+    const callArg = vi.mocked(prisma.document.findMany).mock.calls[0][0] as any;
+    expect(callArg.where.OR).toBeDefined();
+    expect(callArg.where.OR.some((c: any) => c.title?.contains === "rabbitmq timeout")).toBe(true);
+  });
+
+  it("deve retornar lista vazia quando não há documentos", async () => {
     vi.mocked(prisma.document.findMany).mockResolvedValue([]);
-    const result = await searchDocs({ query: "inexistente", allowedProjects: [] });
-    expect(result.results).toHaveLength(0);
+    vi.mocked(prisma.document.count).mockResolvedValue(0);
+
+    const result = await listDocsForMatching({ allowedProjects: [] });
+
+    expect(result.docs).toHaveLength(0);
+    expect(result.total).toBe(0);
+  });
+
+  it("deve tratar context nulo como string vazia", async () => {
+    vi.mocked(prisma.document.findMany).mockResolvedValue([{ ...mockDoc, context: null }] as any);
+    vi.mocked(prisma.document.count).mockResolvedValue(1);
+
+    const result = await listDocsForMatching({ allowedProjects: [] });
+
+    expect(result.docs[0].context).toBe("");
   });
 });
 
@@ -167,7 +216,7 @@ N/A
 | 12/06/2026 | Dev | Criação |
 `;
 
-  it("deve fazer upload de documento válido com sucesso", async () => {
+  it("deve fazer upload sem chamar API externa de embeddings", async () => {
     vi.mocked(prisma.document.create).mockResolvedValue({
       ...mockDoc,
       id: "new-doc-001",

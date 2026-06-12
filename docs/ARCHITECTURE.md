@@ -8,7 +8,7 @@
 graph TB
     subgraph CLIENT["Cliente (IDE)"]
         IDE["VS Code / JetBrains / Claude.ai"]
-        CC["Claude Code\n(MCP Client)"]
+        CC["IA da IDE\n(MCP Client + matching semântico)"]
     end
 
     subgraph SERVER["MCP Docs Server · Express :3339"]
@@ -16,19 +16,16 @@ graph TB
         RATE["Rate Limiter\n100 req/min por chave"]
         ROUTER["MCP Router\nSessões HTTP + SSE"]
         TOOLS["MCP Tools\n(registradas por escopo)"]
-        SVC["Docs Service\nsearch · upload · get · download"]
-        EMB["Embedding Service\nOpenAI wrapper"]
+        SVC["Docs Service\nlist · upload · get · download"]
         VAL["Markdown Validator\n+ extractContext()"]
         S3["MinIO Client\nAWS SDK S3"]
     end
 
     subgraph INFRA["Infraestrutura (Docker)"]
-        PG[("PostgreSQL 16\n+ pgvector\n:5432")]
+        PG[("PostgreSQL 16\n:5432")]
         REDIS[("Redis 7\n:6379")]
         MINIO[("MinIO\nS3-compatible\n:9002")]
     end
-
-    OPENAI(["OpenAI API\ntext-embedding-3-small"])
 
     IDE --> CC
     CC -->|"HTTP POST /mcp\nAuthorization: Bearer docsk_xxx"| AUTH
@@ -40,15 +37,12 @@ graph TB
     TOOLS --> SVC
     SVC --> VAL
     SVC --> S3
-    SVC --> EMB
     S3 -->|"PUT / GET .md"| MINIO
-    EMB -->|"POST /embeddings"| OPENAI
-    OPENAI -->|"float[1536]"| EMB
-    EMB -->|"UPDATE documents\nSET embedding = vector"| PG
-    SVC -->|"SELECT com\nembedding <=> query"| PG
+    SVC -->|"SELECT documents\nWHERE context ILIKE + filtros"| PG
     SVC -->|"INSERT documents\nchunks · audit_logs"| PG
     TOOLS -->|"SSE response"| ROUTER
     ROUTER -->|"HTTP response / SSE stream"| CC
+    CC -->|"matching semântico\n(compreensão de linguagem)"| CC
     CC -->|"resposta ao usuário"| IDE
 ```
 
@@ -82,33 +76,46 @@ sequenceDiagram
 
 ---
 
-## 3. Fluxo de busca semântica (search_docs)
+## 3. Fluxo de busca semântica (list_docs_for_matching)
+
+A busca semântica é realizada pela própria IA da IDE, sem APIs externas. O servidor fornece os contextos extraídos; a IA decide a relevância usando compreensão de linguagem natural.
 
 ```mermaid
 sequenceDiagram
     participant U as Usuário
-    participant CC as Claude Code
+    participant CC as IA da IDE
     participant SRV as MCP Server
-    participant OAI as OpenAI API
     participant PG as PostgreSQL
+    participant MN as MinIO (S3)
 
     U->>CC: "busque docs sobre erro no download"
-    CC->>SRV: tool: search_docs · query: "erro no download"
-    SRV->>OAI: POST /embeddings · input: "erro no download"
-    OAI-->>SRV: float[1536]
 
-    SRV->>PG: SELECT id, title, category, project, module, tags,\n  updated_at,\n  1 - (embedding <=> $vector) AS score\nFROM documents\nWHERE status = 'active'\n  AND embedding IS NOT NULL\nORDER BY embedding <=> $vector\nLIMIT 5
+    CC->>SRV: tool: list_docs_for_matching\n· query: "erro download"\n· project: "SafeDocs" (opcional)
+    SRV->>PG: SELECT id, title, project, module, category, tags,\n  context[0:500]\nFROM documents\nWHERE status = 'active'\n  AND (title ILIKE '%erro download%'\n    OR context ILIKE '%erro download%'\n    OR tags @> ARRAY['erro download'])\nORDER BY updated_at DESC\nLIMIT 50
+    PG-->>SRV: candidatos pré-filtrados por texto
+    SRV-->>CC: [{ doc_id, title, project, category, tags, context }]
 
-    PG-->>SRV: rows ordenadas por similaridade cosseno
+    Note over CC: IA analisa os contextos semanticamente<br/>identifica os documentos relevantes<br/>sem chamada a API externa
 
-    alt nenhum resultado com embedding
-        SRV->>PG: fallback: SELECT ... WHERE title ILIKE '%erro%'
-        PG-->>SRV: resultados textuais
-    end
+    CC->>SRV: tool: get_doc · { doc_id: "abc-123" }
+    SRV->>PG: SELECT * FROM documents WHERE id = $docId
+    PG-->>SRV: { s3_key, title, ... }
+    SRV->>MN: GET {s3Key}
+    MN-->>SRV: conteúdo .md em UTF-8
+    SRV-->>CC: { doc_id, title, content_markdown, metadata }
 
-    SRV-->>CC: [{ doc_id, title, score: 0.87, category, project }]
-    CC-->>U: "Encontrei: Correção de download na api (score: 0.87)\nUse get_doc para ver o conteúdo completo."
+    CC-->>U: resposta baseada no conteúdo do documento
 ```
+
+### Estratégia de escalabilidade
+
+| Tamanho da base | Uso recomendado |
+|---|---|
+| Até ~200 docs | `list_docs_for_matching()` sem query — IA lê todos os contextos diretamente |
+| 200–1000 docs | `list_docs_for_matching(query: "termos do problema")` — pré-filtro textual reduz o conjunto |
+| 1000+ docs | Combinar `project` + `category` + `query` — manter resultado abaixo de ~50 docs |
+
+O campo `context` retornado é truncado a **500 caracteres** — suficiente para a IA avaliar relevância sem sobrecarregar o contexto da conversa.
 
 ---
 
@@ -117,11 +124,10 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant U as Usuário
-    participant CC as Claude Code
+    participant CC as IA da IDE
     participant SRV as MCP Server
     participant MN as MinIO (S3)
     participant PG as PostgreSQL
-    participant OAI as OpenAI API
 
     U->>CC: "faça upload desta doc sobre consumer-timeout"
     CC->>SRV: tool: upload_markdown_doc · { filename, content_markdown, project, category }
@@ -141,10 +147,6 @@ sequenceDiagram
     SRV->>PG: INSERT documents\n{ title, project, module, category,\n  tags, s3_key, context, status }
     SRV->>PG: INSERT document_chunks\n(seções H1–H3 do markdown)
 
-    SRV->>OAI: POST /embeddings\ninput: "categoria: Bug\nprojeto: Reg+\ntags: ...\n[context]"
-    OAI-->>SRV: float[1536]
-    SRV->>PG: UPDATE documents\nSET embedding = '[0.02, -0.14, ...]'::vector\nWHERE id = $docId
-
     SRV->>PG: INSERT audit_logs { action: docs:upload }
     SRV-->>CC: { doc_id, status: "active", indexing_status: "completed" }
     CC-->>U: "Documento indexado com sucesso. ID: abc-123"
@@ -156,7 +158,7 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    participant CC as Claude Code
+    participant CC as IA da IDE
     participant SRV as MCP Server
     participant PG as PostgreSQL
     participant MN as MinIO (S3)
@@ -191,8 +193,8 @@ documents
 ├── status        TEXT           (active | review_required | rejected)
 ├── tags          TEXT[]
 ├── s3_key        TEXT           (caminho no MinIO)
-├── context       TEXT?          (corpo semântico extraído do markdown)
-├── embedding     vector(1536)?  (pgvector — gerado via OpenAI)
+├── context       TEXT?          (corpo semântico extraído do markdown — base do matching)
+├── embedding     vector(1536)?  (coluna legada — não utilizada, pode ser removida via migration)
 ├── created_by    UUID → users
 └── updated_at    TIMESTAMP
 
@@ -220,17 +222,11 @@ audit_logs
 
 ---
 
-## 7. Estratégia de embeddings
+## 7. Campo context — base do matching semântico
 
-O texto enviado ao modelo `text-embedding-3-small` combina metadados estruturados com o contexto semântico:
+O campo `context` é extraído no upload via `extractContext()`. Ele remove a seção `## Metadados` e blocos de código, preservando o texto das seções de conteúdo:
 
 ```
-categoria: Bug
-projeto: Reg+
-módulo: Admin
-tags: download, storage, url-assinada, s3
-título: Correção de download no módulo Admin
-
 ## 1. Contexto
 O módulo Admin do projeto Reg+ permite que colaboradores façam
 download de documentos armazenados no storage privado...
@@ -243,8 +239,17 @@ Aumentado o tempo de expiração de 30 para 300 segundos...
 [...]
 ```
 
-Isso garante que:
-- Metadados estruturados influenciam a similaridade (filtros semânticos)
-- O corpo do documento carrega o contexto técnico real
-- Seção `## Metadados` é excluída do contexto (já está em colunas separadas)
-- Blocos de código são excluídos (não agregam valor semântico)
+Quanto mais detalhadas as seções do documento, melhor o matching semântico — a IA recebe os primeiros 500 caracteres deste campo para avaliar relevância antes de buscar o conteúdo completo.
+
+---
+
+## 8. Comparação: arquitetura anterior vs atual
+
+| | Anterior (pgvector + OpenAI) | Atual (matching pela IA) |
+|---|---|---|
+| **Busca semântica** | Cosine similarity via pgvector | Compreensão de linguagem da IA da IDE |
+| **Custo externo** | OpenAI API por query + por upload | Zero — IA já está no fluxo |
+| **Dependência externa** | `OPENAI_API_KEY` obrigatória | Nenhuma |
+| **Precisão** | Score numérico (cosine) | Compreensão contextual + intenção |
+| **Escalabilidade** | O(log n) com índice vetorial | O(n) mitigado por pré-filtro textual + filtros |
+| **Setup** | Requer conta OpenAI + créditos | Apenas Docker local |
