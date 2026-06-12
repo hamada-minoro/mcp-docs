@@ -91,7 +91,7 @@ RATE_LIMIT_WINDOW_SECONDS=60
 
 ## Configurar no Claude Code
 
-Adicione em `~/.claude/settings.json`:
+Crie `.mcp.json` na raiz do projeto:
 
 ```json
 {
@@ -107,9 +107,11 @@ Adicione em `~/.claude/settings.json`:
 }
 ```
 
+> **Atenção:** editar `~/.claude/settings.json` não ativa o MCP. O arquivo `.mcp.json` na raiz do projeto é o que o Claude Code reconhece.
+
 ## Configurar no VS Code
 
-Crie `.vscode/mcp.json` na raiz do workspace:
+Crie `.mcp.json` na raiz do workspace:
 
 ```json
 {
@@ -118,12 +120,14 @@ Crie `.vscode/mcp.json` na raiz do workspace:
       "type": "http",
       "url": "http://localhost:3339/mcp",
       "headers": {
-        "Authorization": "Bearer ${input:docs_mcp_api_key}"
+        "Authorization": "Bearer <sua-api-key>"
       }
     }
   }
 }
 ```
+
+> **Atenção:** editar `settings.json` não ativa o MCP. O arquivo `.mcp.json` na raiz do workspace é o que o VS Code reconhece.
 
 ---
 
