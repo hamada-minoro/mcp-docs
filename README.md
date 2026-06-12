@@ -33,7 +33,7 @@ Adicione no arquivo `~/.claude/settings.json`:
       "type": "http",
       "url": "http://localhost:3000/mcp",
       "headers": {
-        "Authorization": "Bearer <sua-api-key>"
+        "Authorization": "Bearer docsk_dev_6608_482a1256e7090302fc7c1f321c9b945d811c7f0fdc022626363ffcd7005c7b8a"
       }
     }
   }

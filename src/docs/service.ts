@@ -4,6 +4,7 @@ import {
   getMarkdownContent,
   getPresignedDownloadUrl,
   buildS3Key,
+  buildRejectedS3Key,
 } from "../storage/minio.js";
 import {
   validateMarkdown,
@@ -177,19 +178,24 @@ export async function uploadDoc(input: UploadDocInput): Promise<{
     throw new Error(`Sem permissão para fazer upload no projeto '${project}'.`);
   }
 
+  const title = extractTitle(content_markdown);
+  const metadataFromDoc = extractMetadata(content_markdown);
+  const resolvedCategory = metadataFromDoc.category ?? category;
+  const resolvedModule = module ?? metadataFromDoc.module;
+
   const validation = validateMarkdown(filename, content_markdown);
 
   if (!validation.valid) {
     const doc = await prisma.document.create({
       data: {
-        title: extractTitle(content_markdown),
+        title,
         filename,
         project,
-        module,
-        category,
+        module: resolvedModule,
+        category: resolvedCategory,
         status: "rejected",
         tags,
-        s3Key: `rejected/${userId}/${Date.now()}_${filename}`,
+        s3Key: buildRejectedS3Key(userId, filename),
         createdBy: userId,
       },
     });
@@ -200,12 +206,9 @@ export async function uploadDoc(input: UploadDocInput): Promise<{
   }
 
   const docId = crypto.randomUUID();
-  const s3Key = buildS3Key(project, docId, filename);
+  const s3Key = buildS3Key(project, resolvedCategory, docId, filename, resolvedModule);
 
   await uploadMarkdown(s3Key, content_markdown);
-
-  const title = extractTitle(content_markdown);
-  const metadataFromDoc = extractMetadata(content_markdown);
 
   const doc = await prisma.document.create({
     data: {
@@ -213,8 +216,8 @@ export async function uploadDoc(input: UploadDocInput): Promise<{
       title,
       filename,
       project,
-      module: module ?? metadataFromDoc.module,
-      category: metadataFromDoc.category ?? category,
+      module: resolvedModule,
+      category: resolvedCategory,
       status: validation.warnings.length > 3 ? "review_required" : "active",
       tags: [...new Set([...tags, ...(metadataFromDoc.tags ?? [])])],
       s3Key,

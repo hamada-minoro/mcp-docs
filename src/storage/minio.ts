@@ -86,7 +86,41 @@ export async function objectExists(key: string): Promise<boolean> {
   }
 }
 
-export function buildS3Key(project: string, docId: string, filename: string): string {
-  const safeProject = project.toLowerCase().replace(/[^a-z0-9-]/g, "-");
-  return `docs/${safeProject}/${docId}/${filename}`;
+const CATEGORY_SLUG: Record<string, string> = {
+  "Bug": "bug",
+  "Refatoração": "refatoracao",
+  "Procedimento": "procedimento",
+  "Decisão técnica": "decisao-tecnica",
+  "Operacional": "operacional",
+};
+
+function slug(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+export function buildS3Key(
+  project: string,
+  category: string,
+  docId: string,
+  filename: string,
+  module?: string
+): string {
+  const parts = [
+    "docs",
+    slug(project),
+    CATEGORY_SLUG[category] ?? slug(category),
+    ...(module ? [slug(module)] : []),
+    docId,
+    filename,
+  ];
+  return parts.join("/");
+}
+
+export function buildRejectedS3Key(userId: string, filename: string): string {
+  return `rejected/${userId}/${Date.now()}-${filename}`;
 }

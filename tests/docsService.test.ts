@@ -19,7 +19,10 @@ vi.mock("../src/storage/minio.js", () => ({
   uploadMarkdown: vi.fn().mockResolvedValue(undefined),
   getMarkdownContent: vi.fn().mockResolvedValue("# Conteúdo mock"),
   getPresignedDownloadUrl: vi.fn().mockResolvedValue("https://minio.local/presigned-url"),
-  buildS3Key: vi.fn((project: string, id: string, file: string) => `docs/${project}/${id}/${file}`),
+  buildS3Key: vi.fn((project: string, category: string, id: string, file: string, mod?: string) =>
+    `docs/${project}/${category}${mod ? "/" + mod : ""}/${id}/${file}`
+  ),
+  buildRejectedS3Key: vi.fn((userId: string, file: string) => `rejected/${userId}/${file}`),
 }));
 
 import { prisma } from "../src/db/client.js";
