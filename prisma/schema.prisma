@@ -1,0 +1,109 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  role      String   @default("collaborator") // collaborator | admin
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  apiKeys   ApiKey[]
+  documents Document[] @relation("CreatedBy")
+  updatedDocuments Document[] @relation("UpdatedBy")
+  auditLogs AuditLog[]
+
+  @@map("users")
+}
+
+model ApiKey {
+  id              String    @id @default(uuid())
+  userId          String    @map("user_id")
+  keyPrefix       String    @map("key_prefix")
+  keyHash         String    @map("key_hash")
+  scopes          String[]
+  allowedProjects String[]  @map("allowed_projects")
+  status          String    @default("active") // active | revoked | expired
+  lastUsedAt      DateTime? @map("last_used_at")
+  expiresAt       DateTime? @map("expires_at")
+  revokedAt       DateTime? @map("revoked_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  ipAddresses     String[]  @map("ip_addresses")
+
+  user      User       @relation(fields: [userId], references: [id])
+  auditLogs AuditLog[]
+
+  @@index([keyHash])
+  @@index([status])
+  @@map("api_keys")
+}
+
+model Document {
+  id        String   @id @default(uuid())
+  title     String
+  filename  String
+  project   String
+  module    String?
+  category  String
+  status    String   @default("active") // active | draft | review_required | obsolete | archived | rejected
+  tags      String[] @default([])
+  s3Key     String   @map("s3_key")
+  createdBy String?  @map("created_by")
+  updatedBy String?  @map("updated_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  creator   User?      @relation("CreatedBy", fields: [createdBy], references: [id])
+  updater   User?      @relation("UpdatedBy", fields: [updatedBy], references: [id])
+  chunks    DocumentChunk[]
+  auditLogs AuditLog[]
+
+  @@index([project])
+  @@index([status])
+  @@index([category])
+  @@map("documents")
+}
+
+model DocumentChunk {
+  id           String   @id @default(uuid())
+  documentId   String   @map("document_id")
+  sectionTitle String?  @map("section_title")
+  chunkIndex   Int      @map("chunk_index")
+  content      String
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@map("document_chunks")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?  @map("user_id")
+  apiKeyId   String?  @map("api_key_id")
+  action     String
+  targetType String?  @map("target_type")
+  targetId   String?  @map("target_id")
+  metadata   Json?
+  ipAddress  String?  @map("ip_address")
+  userAgent  String?  @map("user_agent")
+  result     String?  // success | error
+  errorMsg   String?  @map("error_msg")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user   User?   @relation(fields: [userId], references: [id])
+  apiKey ApiKey? @relation(fields: [apiKeyId], references: [id])
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
