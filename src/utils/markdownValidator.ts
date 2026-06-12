@@ -159,6 +159,22 @@ export function extractTitle(content: string): string {
   return match ? match[1].trim() : "Sem título";
 }
 
+export function extractContext(content: string): string {
+  // Remove the ## Metadados section — already stored as structured columns
+  let ctx = content.replace(/## Metadados[\s\S]*?(?=\n## |\n---\n|$)/i, "");
+
+  // Remove fenced code blocks — not semantically useful for search
+  ctx = ctx.replace(/```[\s\S]*?```/gm, "");
+
+  // Remove inline code
+  ctx = ctx.replace(/`[^`\n]+`/g, "");
+
+  // Collapse 3+ blank lines into 2
+  ctx = ctx.replace(/\n{3,}/g, "\n\n").trim();
+
+  return ctx;
+}
+
 export function extractMetadata(content: string): {
   category?: string;
   project?: string;

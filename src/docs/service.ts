@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../db/client.js";
 import {
   uploadMarkdown,
@@ -10,7 +11,13 @@ import {
   validateMarkdown,
   extractTitle,
   extractMetadata,
+  extractContext,
 } from "../utils/markdownValidator.js";
+import {
+  isEmbeddingEnabled,
+  buildDocumentText,
+  generateEmbedding,
+} from "../services/embedding.js";
 
 export interface SearchDocsInput {
   query: string;
@@ -36,24 +43,100 @@ export interface SearchDocResult {
 }
 
 export async function searchDocs(input: SearchDocsInput): Promise<{ results: SearchDocResult[] }> {
+  if (isEmbeddingEnabled()) {
+    try {
+      return await searchDocsWithVector(input);
+    } catch (err) {
+      console.error("[search] vector search failed, falling back to text search:", err);
+    }
+  }
+  return searchDocsWithText(input);
+}
+
+type VectorRow = {
+  id: string;
+  title: string;
+  filename: string;
+  project: string;
+  module: string | null;
+  category: string;
+  status: string;
+  tags: string[];
+  updated_at: Date;
+  score: number;
+};
+
+async function searchDocsWithVector(input: SearchDocsInput): Promise<{ results: SearchDocResult[] }> {
   const { query, project, module, category, limit = 5, allowedProjects } = input;
 
-  const whereClause: Record<string, unknown> = {
-    status: "active",
+  const queryEmbedding = await generateEmbedding(query);
+  const vectorStr = `[${queryEmbedding.join(",")}]`;
+  const take = Math.min(limit, 20);
+
+  let conditions = Prisma.sql`d.status = 'active' AND d.embedding IS NOT NULL`;
+
+  if (allowedProjects.length > 0) {
+    conditions = Prisma.sql`${conditions} AND d.project = ANY(${allowedProjects})`;
+  }
+  if (project) {
+    conditions = Prisma.sql`${conditions} AND d.project ILIKE ${"%" + project + "%"}`;
+  }
+  if (module) {
+    conditions = Prisma.sql`${conditions} AND d.module ILIKE ${"%" + module + "%"}`;
+  }
+  if (category) {
+    conditions = Prisma.sql`${conditions} AND d.category ILIKE ${"%" + category + "%"}`;
+  }
+
+  const rows = await prisma.$queryRaw<VectorRow[]>(Prisma.sql`
+    SELECT
+      d.id,
+      d.title,
+      d.filename,
+      d.project,
+      d.module,
+      d.category,
+      d.status,
+      d.tags,
+      d.updated_at,
+      (1 - (d.embedding <=> ${vectorStr}::vector))::float AS score
+    FROM documents d
+    WHERE ${conditions}
+    ORDER BY d.embedding <=> ${vectorStr}::vector
+    LIMIT ${take}
+  `);
+
+  return {
+    results: rows.map((row) => ({
+      doc_id: row.id,
+      title: row.title,
+      filename: row.filename,
+      project: row.project,
+      module: row.module,
+      category: row.category,
+      status: row.status,
+      tags: row.tags,
+      summary: `Documento ${row.category} do projeto ${row.project}${row.module ? ` / ${row.module}` : ""}`,
+      score: Number(row.score),
+      updated_at: new Date(row.updated_at).toISOString(),
+    })),
   };
+}
+
+async function searchDocsWithText(input: SearchDocsInput): Promise<{ results: SearchDocResult[] }> {
+  const { query, project, module, category, limit = 5, allowedProjects } = input;
+
+  const whereClause: Record<string, unknown> = { status: "active" };
 
   if (allowedProjects.length > 0) {
     whereClause.project = { in: allowedProjects };
   }
-
   if (project) {
     whereClause.project = { contains: project, mode: "insensitive" };
   }
-
   if (module) {
     whereClause.module = { contains: module, mode: "insensitive" };
   }
-
   if (category) {
     whereClause.category = { contains: category, mode: "insensitive" };
   }
@@ -182,6 +265,7 @@ export async function uploadDoc(input: UploadDocInput): Promise<{
   const metadataFromDoc = extractMetadata(content_markdown);
   const resolvedCategory = metadataFromDoc.category ?? category;
   const resolvedModule = module ?? metadataFromDoc.module;
+  const context = extractContext(content_markdown);
 
   const validation = validateMarkdown(filename, content_markdown);
 
@@ -221,11 +305,20 @@ export async function uploadDoc(input: UploadDocInput): Promise<{
       status: validation.warnings.length > 3 ? "review_required" : "active",
       tags: [...new Set([...tags, ...(metadataFromDoc.tags ?? [])])],
       s3Key,
+      context,
       createdBy: userId,
     },
   });
 
   await indexDocumentChunks(doc.id, content_markdown);
+  await generateAndStoreEmbedding(doc.id, {
+    title: doc.title,
+    category: doc.category,
+    project: doc.project,
+    module: doc.module,
+    tags: doc.tags,
+    context,
+  });
 
   return {
     doc_id: doc.id,
@@ -236,6 +329,23 @@ export async function uploadDoc(input: UploadDocInput): Promise<{
         ? "Documento recebido, mas requer revisão antes de ser publicado."
         : "Documento recebido, validado e indexado com sucesso.",
   };
+}
+
+async function generateAndStoreEmbedding(
+  docId: string,
+  doc: { title: string; category: string; project: string; module?: string | null; tags: string[]; context: string }
+): Promise<void> {
+  if (!isEmbeddingEnabled()) return;
+  try {
+    const text = buildDocumentText(doc);
+    const embedding = await generateEmbedding(text);
+    const vectorStr = `[${embedding.join(",")}]`;
+    await prisma.$executeRaw`
+      UPDATE documents SET embedding = ${vectorStr}::vector WHERE id = ${docId}
+    `;
+  } catch (err) {
+    console.error(`[embedding] failed to generate embedding for doc ${docId}:`, err);
+  }
 }
 
 async function indexDocumentChunks(documentId: string, content: string): Promise<void> {
