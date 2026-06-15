@@ -39,6 +39,7 @@ CREATE TABLE "documents" (
     "status" TEXT NOT NULL DEFAULT 'active',
     "tags" TEXT[] DEFAULT ARRAY[]::TEXT[],
     "s3_key" TEXT NOT NULL,
+    "context" TEXT,
     "created_by" TEXT,
     "updated_by" TEXT,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,

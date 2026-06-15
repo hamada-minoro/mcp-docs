@@ -194,7 +194,6 @@ documents
 ├── tags          TEXT[]
 ├── s3_key        TEXT           (caminho no MinIO)
 ├── context       TEXT?          (corpo semântico extraído do markdown — base do matching)
-├── embedding     vector(1536)?  (coluna legada — não utilizada, pode ser removida via migration)
 ├── created_by    UUID → users
 └── updated_at    TIMESTAMP
 
@@ -243,13 +242,17 @@ Quanto mais detalhadas as seções do documento, melhor o matching semântico �
 
 ---
 
-## 8. Comparação: arquitetura anterior vs atual
+## 8. Banco de dados e alternativas de infraestrutura
 
-| | Anterior (pgvector + OpenAI) | Atual (matching pela IA) |
-|---|---|---|
-| **Busca semântica** | Cosine similarity via pgvector | Compreensão de linguagem da IA da IDE |
-| **Custo externo** | OpenAI API por query + por upload | Zero — IA já está no fluxo |
-| **Dependência externa** | `OPENAI_API_KEY` obrigatória | Nenhuma |
-| **Precisão** | Score numérico (cosine) | Compreensão contextual + intenção |
-| **Escalabilidade** | O(log n) com índice vetorial | O(n) mitigado por pré-filtro textual + filtros |
-| **Setup** | Requer conta OpenAI + créditos | Apenas Docker local |
+O projeto usa PostgreSQL como única dependência de banco de dados. O matching semântico é realizado pela própria IA da IDE, sem extensões vetoriais ou APIs externas — o PostgreSQL é usado apenas para persistência de metadados e busca textual via `ILIKE`.
+
+Para rodar em ambiente gerenciado sem Docker local, qualquer serviço PostgreSQL-compatible funciona sem mudança de código:
+
+| Opção | Descrição |
+|---|---|
+| **Neon** | PostgreSQL serverless, free tier generoso |
+| **Supabase** | PostgreSQL gerenciado com painel web |
+| **RDS PostgreSQL** | Gerenciado na AWS |
+| **Aurora Serverless v2** | PostgreSQL-compatible, escala para zero |
+
+> Veja [postgres-vs-dynamodb.md](postgres-vs-dynamodb.md) para a análise de viabilidade de migração para DynamoDB.

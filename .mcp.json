@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "DevVault": {
+      "type": "http",
+      "url": "http://localhost:3001/mcp",
+      "headers": {
+        "Authorization": "Bearer docsk_dev_dac3_8f3c6b67110f6c5f4e694dba1cd3a5286933a1f60b20c12213bd15bff322d558"
+      }
+    }
+  }
+}

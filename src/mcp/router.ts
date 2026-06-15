@@ -11,7 +11,7 @@ const sessions = new Map<string, StreamableHTTPServerTransport>();
 
 function createMcpServer(req: Request): McpServer {
   const server = new McpServer({
-    name: "internal-docs",
+    name: "DevVault",
     version: "1.0.0",
   });
 

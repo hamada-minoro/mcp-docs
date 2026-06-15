@@ -1,12 +1,10 @@
 generator client {
-  provider        = "prisma-client-js"
-  previewFeatures = ["postgresqlExtensions"]
+  provider = "prisma-client-js"
 }
 
 datasource db {
-  provider   = "postgresql"
-  url        = env("DATABASE_URL")
-  extensions = [vector]
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model User {
@@ -56,10 +54,9 @@ model Document {
   category  String
   status    String   @default("active")
   tags      String[] @default([])
-  s3Key     String                        @map("s3_key")
+  s3Key     String  @map("s3_key")
   context   String?
-  embedding Unsupported("vector(1536)")?
-  createdBy String?                       @map("created_by")
+  createdBy String? @map("created_by")
   updatedBy String?                       @map("updated_by")
   createdAt DateTime                      @default(now()) @map("created_at")
   updatedAt DateTime                      @updatedAt @map("updated_at")

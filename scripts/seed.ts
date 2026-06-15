@@ -199,10 +199,8 @@ async function main() {
   console.log("⚠️  ATENÇÃO: As chaves acima só são exibidas uma vez!");
   console.log("═══════════════════════════════════════════════════════\n");
   console.log("Próximos passos:");
-  console.log("  1. Configure OPENAI_API_KEY no .env");
-  console.log("  2. npx tsx scripts/upload-example-docs.ts  (faz upload no MinIO)");
-  console.log("  3. npx tsx scripts/reindex-embeddings.ts   (gera embeddings)");
-  console.log("  4. npm run dev\n");
+  console.log("  1. npx tsx scripts/upload-example-docs.ts  (faz upload no MinIO)");
+  console.log("  2. npm run dev\n");
 }
 
 main()

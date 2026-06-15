@@ -1,4 +1,4 @@
-# MCP Docs Server
+# DevVault — MCP Docs Server
 
 Servidor MCP para centralizar documentações técnicas internas da empresa. Integra com Claude Code, VS Code, JetBrains e qualquer cliente compatível com o protocolo MCP.
 
@@ -96,7 +96,7 @@ Crie `.mcp.json` na raiz do projeto:
 ```json
 {
   "mcpServers": {
-    "internal-docs": {
+    "DevVault": {
       "type": "http",
       "url": "http://localhost:3339/mcp",
       "headers": {
@@ -107,27 +107,27 @@ Crie `.mcp.json` na raiz do projeto:
 }
 ```
 
-> **Atenção:** editar `~/.claude/settings.json` não ativa o MCP. O arquivo `.mcp.json` na raiz do projeto é o que o Claude Code reconhece.
+> **Atenção:** a chave correta é `"mcpServers"` (não `"servers"`). Editar `~/.claude/settings.json` não ativa o MCP — o arquivo `.mcp.json` na raiz do projeto é o que o Claude Code reconhece.
 
-## Configurar no VS Code
+## Configurar no VS Code (extensão Claude Code)
 
 Crie `.mcp.json` na raiz do workspace:
 
 ```json
 {
-  "servers": {
-    "internal-docs": {
+  "mcpServers": {
+    "DevVault": {
       "type": "http",
       "url": "http://localhost:3339/mcp",
       "headers": {
-        "Authorization": "Bearer <sua-api-key>"
+        "Authorization": "Bearer docsk_dev_xxxx_<sua-api-key>"
       }
     }
   }
 }
 ```
 
-> **Atenção:** editar `settings.json` não ativa o MCP. O arquivo `.mcp.json` na raiz do workspace é o que o VS Code reconhece.
+> **Atenção:** a chave correta é `"mcpServers"` (não `"servers"`). Após criar ou editar o arquivo, recarregue a janela do VS Code (`Ctrl+Shift+P` → "Developer: Reload Window").
 
 ---
 
@@ -208,6 +208,8 @@ O PostgreSQL tem suporte nativo a **Full-Text Search** via `to_tsvector` / `plai
 
 O fallback automático (quando a busca textual retorna zero) continua sendo válido com FTS — apenas o critério de "não encontrou nada" muda de "nenhum ILIKE bateu" para "nenhum documento passou no plainto_tsquery".
 
+> Veja [docs/postgres-vs-dynamodb.md](docs/postgres-vs-dynamodb.md) para a análise de por que o DynamoDB não é adequado como substituto do PostgreSQL para este projeto.
+
 ### Upload de documento
 
 ```
@@ -257,7 +259,7 @@ npx tsx scripts/upload-example-docs.ts   # Upload dos docs de exemplo no MinIO
 ## Exemplos de uso na IDE
 
 ```
-Consulte o MCP internal-docs: existe documentação sobre erro de consumer-timeout no RabbitMQ?
+Consulte o DevVault: existe documentação sobre erro de consumer-timeout no RabbitMQ?
 
 Busque nas docs se já resolvemos problema com URL assinada expirando no módulo Admin do Reg+.
 
@@ -273,3 +275,5 @@ Liste as documentações mais recentes do projeto Reg+.
 ## Arquitetura e fluxo de comunicação
 
 Veja [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) para os diagramas completos.
+
+Veja [docs/search-flow.md](docs/search-flow.md) para o detalhamento do fluxo de busca (ILIKE atual vs Full-Text Search).
