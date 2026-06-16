@@ -142,6 +142,7 @@ Crie `.mcp.json` na raiz do workspace:
 | `validate_markdown_doc` | `docs:upload` | Valida estrutura antes do upload |
 | `list_recent_docs` | `docs:search` | Lista documentações recentes por projeto/módulo |
 | `suggest_doc_template` | `docs:search` | Gera template Markdown no padrão da empresa |
+| `create_user` | `admin:keys` | Cria usuário e gera API key — retorna a chave raw (exibida uma única vez) |
 
 ### Escopos por perfil
 
@@ -150,6 +151,18 @@ Crie `.mcp.json` na raiz do workspace:
 | Admin | todos (`docs:*` + `admin:keys` + `admin:audit`) |
 | Colaborador | `docs:search`, `docs:read`, `docs:download`, `docs:upload` |
 | Somente leitura | `docs:search`, `docs:read`, `docs:download` |
+
+### Parâmetros da tool `create_user`
+
+| Parâmetro | Tipo | Obrigatório | Descrição |
+|---|---|---|---|
+| `name` | string | sim | Nome completo do usuário |
+| `email` | string | sim | E-mail (deve ser único na base) |
+| `role` | `admin` \| `collaborator` \| `readonly` | sim | Perfil — define os escopos da API key gerada automaticamente |
+| `allowed_projects` | string[] | não | Projetos permitidos. Omita ou passe `[]` para acesso a todos |
+| `expires_at` | string (ISO 8601) | não | Data de expiração da chave. Omita para chave sem expiração |
+
+> **Atenção:** a API key retornada em `api_key` é exibida **uma única vez**. O servidor armazena apenas o hash SHA-256 — não é possível recuperá-la depois.
 
 ---
 
@@ -268,6 +281,8 @@ Faça upload deste arquivo como documentação do projeto Reg+, categoria Bug, m
 Gere um template de documentação para um Bug no projeto SafeDocs, módulo Admin.
 
 Liste as documentações mais recentes do projeto Reg+.
+
+Crie um usuário chamado João Silva, e-mail joao@empresa.com, role collaborator, com acesso apenas ao projeto Reg+.
 ```
 
 ---

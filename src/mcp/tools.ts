@@ -9,6 +9,7 @@ import {
   listDocsForMatching,
 } from "../docs/service.js";
 import { validateMarkdown } from "../utils/markdownValidator.js";
+import { createUser } from "../admin/service.js";
 
 export function registerTools(server: McpServer, context: {
   userId: string;
@@ -16,7 +17,7 @@ export function registerTools(server: McpServer, context: {
   scopes: string[];
   allowedProjects: string[];
 }): void {
-  const { userId, scopes, allowedProjects } = context;
+  const { userId, apiKeyId, scopes, allowedProjects } = context;
 
   if (scopes.includes("docs:search")) {
     server.registerTool(
@@ -262,6 +263,61 @@ export function registerTools(server: McpServer, context: {
       async ({ category, project, module, problem }) => {
         const result = suggestDocTemplate({ category, project, module, problem });
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+    );
+  }
+
+  if (scopes.includes("admin:keys")) {
+    server.registerTool(
+      "create_user",
+      {
+        description:
+          "Cria um novo usuário na base e gera sua API key. Retorna a chave gerada — ela só é exibida " +
+          "uma vez e não pode ser recuperada depois. Requer escopo admin:keys. " +
+          "O campo role define os escopos concedidos: " +
+          "'admin' recebe todos os escopos; " +
+          "'collaborator' recebe docs:search, docs:read, docs:download, docs:upload; " +
+          "'readonly' recebe docs:search, docs:read, docs:download.",
+        inputSchema: {
+          name: z.string().describe("Nome completo do usuário"),
+          email: z.string().email().describe("E-mail do usuário (deve ser único na base)"),
+          role: z
+            .enum(["admin", "collaborator", "readonly"])
+            .describe("Perfil do usuário — define os escopos da API key gerada"),
+          allowed_projects: z
+            .array(z.string())
+            .optional()
+            .describe(
+              "Projetos que o usuário pode acessar (ex: ['Reg+', 'SafeDocs']). " +
+              "Omita ou passe [] para liberar acesso a todos os projetos."
+            ),
+          expires_at: z
+            .string()
+            .optional()
+            .describe(
+              "Data de expiração da API key em formato ISO 8601 (ex: '2027-01-01T00:00:00Z'). " +
+              "Omita para gerar uma chave sem expiração."
+            ),
+        },
+      },
+      async ({ name, email, role, allowed_projects, expires_at }) => {
+        try {
+          const result = await createUser({
+            name,
+            email,
+            role,
+            allowedProjects: allowed_projects ?? [],
+            expiresAt: expires_at,
+            createdByUserId: userId,
+            createdByApiKeyId: apiKeyId,
+          });
+          return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+        } catch (error) {
+          return {
+            content: [{ type: "text", text: `Erro ao criar usuário: ${String(error)}` }],
+            isError: true,
+          };
+        }
       }
     );
   }
